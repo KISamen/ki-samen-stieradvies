@@ -1,15 +1,14 @@
 """
 PDF-parsing module voor melkcontrole-rapporten.
-Ondersteunt CRV (NL), DK, DE en BE formaten via tabel- én tekstextractie.
+Ondersteunt CRV (NL), DMS (DK), DE en BE formaten.
 """
-import io
 import re
 
 import pandas as pd
 import pdfplumber
 
 
-# ── Kolomaliassen ──────────────────────────────────────────────────────────────
+# ── Kolomaliassen (tabel-gebaseerde PDFs) ─────────────────────────────────────
 COLUMN_ALIASES = {
     'animal_id': [
         'dier nr', 'diernr', 'dier_nr', 'animal id', 'animal_id',
@@ -25,18 +24,19 @@ COLUMN_ALIASES = {
         'lakt. nr.', 'lakt nr', 'lactatienummer', 'lactation number',
         'lakt.', 'lakt', 'ln', 'parity', 'pariteit', 'kalfsnum',
         'kalving', 'lact', 'lact.', 'lactatie', 'lact.nr.', 'lact.nr',
-        'lak', 'lak.', 'lakt.nr.',
+        'lak', 'lak.', 'lakt.nr.', 'lakt. nr',
     ],
     'lactation_value': [
         'lakt. waarde', 'laktwaarde', 'lactatiewaarde', 'lactation value',
         'lakt. vardi', 'lakt. värd', 'lv', 'index', 'productie index',
         'melkindex', 'nvi', 'inet', 'lw', 'lakt.w.', 'lakt.w',
         'laktw', 'lakt. w.', 'lakt.waarde', 'l.w.', 'lw.',
+        'lakt. værdi', 'laktationsværdi', 'lakt.værdi',
     ],
     'inseminations': [
         'inseminaties', 'ins', 'antal ins.', 'aantal ins', 'insem',
         'insemination', 'dekking', 'aantal dekkingen', 'ins.', 'ins.',
-        'ins.nr', 'insem.', 'dekk.', 'di', 'aantal ins.',
+        'ins.nr', 'insem.', 'dekk.', 'di', 'aantal ins.', 'antal ins',
     ],
     'pregnant': [
         'drachtig', 'drägt.', 'pregnant', 'gravid', 'drächtig',
@@ -45,25 +45,26 @@ COLUMN_ALIASES = {
     'milk_yield': [
         'melk', 'melkgift', 'milk', 'mælk', 'milch', 'kg melk',
         'milk yield', 'melkproductie', '305d', 'melk kg', 'melk(kg)',
-        'kg', 'melkg', 'melk305',
+        'kg', 'melkg', 'melk305', 'kg.', 'kg. i',
     ],
     'cell_count': [
         'celgetal', 'cel', 'scc', 'celfetal', 'celtal', 'somatic',
         'cell count', 'cellen', 'tankgetal', 'celg', 'celg.', 'cg',
-        'cel.getal', 'celget.',
+        'cel.getal', 'celget.', 's.12 mdr.', 's.12mdr', 'somatisk',
     ],
     'protein': [
         'eiwit', 'eiwit %', 'protein', 'protein %', 'protein%',
         'proteine', 'eiwitgehalte', 'eiw', 'eiw.', 'eiw%', 'eiw. %',
+        'prot.', 'prot', 'proteinprocent',
     ],
     'fat': [
         'vet', 'vet %', 'fat', 'fedt %', 'fett', 'vetgehalte', 'fat%',
-        'vet%', 'vet.', 'vg', 'v%',
+        'vet%', 'vet.', 'vg', 'v%', 'fedt', 'fedtprocent',
     ],
     'urea': ['ureum', 'urea', 'ure', 'urea mmol', 'ur'],
     'sire_name': [
         'vadernaam', 'vader', 'sire', 'far', 'vater', 'stier vader',
-        'sire name', 'vadersnaam', 'v.naam', 'va', 'vad.',
+        'sire name', 'vadersnaam', 'v.naam', 'va', 'vad.', 'morfar',
     ],
     'sire_code': ['vadercode', 'tyrkode', 'sire code', 'vader code'],
     'aaa_code': ['aaa', 'aaa code', 'aaa-code', 'aaa_code'],
@@ -75,6 +76,101 @@ COLUMN_ALIASES = {
     ],
 }
 
+# ── DMS Deens Min-Liste formaat ───────────────────────────────────────────────
+# Kolomvolgorde (na Dyr. Nr.):
+#   0: Lakt. værdi   1: Lakt. nr.   2: Antal ins.   3: Dg.e.kælv.
+#   4: Dg.e.Drægt.  5: Kg.i         6: S.12 mdr.    7: Fedt    8: Prot.
+#   9+: Morfar (naam)
+
+_DMS_DETECT = re.compile(r'dms\s+min|antal\s+dyr\s*:|dyr\.\s*nr\.|besætning', re.I)
+_DMS_DATA_ROW = re.compile(
+    r'^(DK[\d\s]{6,16}|\d{5,15})\s+'   # Dier-ID
+    r'(-?\d+)\s+'                        # Lakt. værdi
+    r'(\d+)\s+'                          # Lakt. nr.
+    r'(\d+)\s+'                          # Antal ins.
+    r'(\d+)\s+'                          # Dg. e. kælv.
+    r'(-|\d+)\s+'                        # Dg. e. Drægt.
+    r'(\d+)\s+'                          # Kg. i
+    r'(-|\d+)\s+'                        # S.12 mdr. (celgetal)
+    r'([\d.,]+)\s+'                      # Fedt %
+    r'([\d.,]+)'                         # Prot. %
+)
+
+
+def _parse_dms_format(lines: list[str]) -> pd.DataFrame:
+    """
+    Parser voor Deens DMS 'Min Liste' formaat.
+
+    Kolommen na Dyr. Nr.:
+      Lakt. værdi | Lakt. nr. | Antal ins. | Dg.kælv. | Dg.Drægt. |
+      Kg.i | S.12 mdr. | Fedt | Prot. | Morfar
+    """
+    text_block = '\n'.join(lines[:40])
+    if not _DMS_DETECT.search(text_block):
+        return pd.DataFrame()
+
+    rows = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+
+        m = _DMS_DATA_ROW.match(stripped)
+        if not m:
+            continue
+
+        raw_id = m.group(1).strip()
+        # Compacteer dier-ID (verwijder interne spaties)
+        animal_id = re.sub(r'\s+', '', raw_id)
+
+        lakt_val = _to_float(m.group(2))
+        lakt_nr = _to_float(m.group(3))
+        antal_ins = _to_float(m.group(4))
+        # groep 5 = Dg. e. kælv. (niet nodig voor advies)
+        dg_draegt = _to_float(m.group(6))   # > 0 = drachtig
+        kg_i = _to_float(m.group(7))
+        s12_mdr = _to_float(m.group(8))     # celgetal 12 mnd gemiddelde
+        fedt = _to_float(m.group(9).replace(',', '.'))
+        prot = _to_float(m.group(10).replace(',', '.'))
+
+        pregnant = dg_draegt is not None and dg_draegt > 0
+
+        rows.append({
+            'animal_id': animal_id,
+            'lactation_value': lakt_val,
+            'lactation_number': lakt_nr,
+            'inseminations': antal_ins,
+            'cell_count': s12_mdr,
+            'milk_yield': kg_i,
+            'fat': fedt,
+            'protein': prot,
+            'pregnant': pregnant,
+            'animal_name': '',
+            'sire_name': '',
+            'aaa_code': '',
+            'pfw': '',
+            'inbreeding_coefficient': None,
+            'advisor_note': '',
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    df = df[df['animal_id'].notna() & (df['animal_id'] != '')].reset_index(drop=True)
+    return df
+
+
+def _to_float(val) -> float | None:
+    if val is None or str(val).strip() in ('-', '', 'nan', 'None'):
+        return None
+    try:
+        return float(str(val).replace(',', '.'))
+    except (ValueError, TypeError):
+        return None
+
+
+# ── Tabelextractie ────────────────────────────────────────────────────────────
 
 def _normalize(text: str) -> str:
     if not text:
@@ -83,36 +179,27 @@ def _normalize(text: str) -> str:
 
 
 def _detect_column_mapping(headers: list) -> dict:
-    """Match kolomkoppen op bekende aliassen."""
     mapping = {}
     normalized_headers = {_normalize(h): h for h in headers if h}
-
     for std_field, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
-            norm_alias = _normalize(alias)
-            if norm_alias in normalized_headers:
-                mapping[std_field] = normalized_headers[norm_alias]
+            if _normalize(alias) in normalized_headers:
+                mapping[std_field] = normalized_headers[_normalize(alias)]
                 break
-
     return mapping
 
 
 def _extract_tables_from_pdf(pdf_file) -> list:
-    """Extraheer tabellen met pdfplumber. Retourneert lijst van DataFrames."""
-    tables = []
     if hasattr(pdf_file, 'seek'):
         pdf_file.seek(0)
-
+    tables = []
     try:
         with pdfplumber.open(pdf_file) as pdf:
             for page in pdf.pages:
-                # Probeer eerst standaard tabelextractie
-                page_tables = page.extract_tables()
-                for tbl in page_tables:
+                for tbl in page.extract_tables():
                     if not tbl or len(tbl) < 2:
                         continue
                     try:
-                        # Gebruik eerste rij als header, ook als die None-waarden heeft
                         header = [str(c or '') for c in tbl[0]]
                         rows = [[str(c or '') for c in row] for row in tbl[1:]]
                         df = pd.DataFrame(rows, columns=header)
@@ -124,12 +211,10 @@ def _extract_tables_from_pdf(pdf_file) -> list:
                         continue
     except Exception:
         pass
-
     return tables
 
 
 def _extract_text_lines_from_pdf(pdf_file) -> list[str]:
-    """Extraheer alle tekst uit PDF als lijst van regels."""
     if hasattr(pdf_file, 'seek'):
         pdf_file.seek(0)
     lines = []
@@ -145,28 +230,17 @@ def _extract_text_lines_from_pdf(pdf_file) -> list[str]:
 
 
 def _parse_text_as_table(lines: list[str]) -> pd.DataFrame:
-    """
-    Probeer tekst-gebaseerde parsing voor CRV-stijl rapporten.
-    Zoekt naar de koptekstregel, dan parseet rijen als whitespace-gescheiden data.
-    """
-    # Zoek naar een regel die kolomkoppen lijkt te bevatten
-    header_patterns = [
-        r'(koe|nr|dier|lakt|lw|ins|celg|melk|vet|eiwit)',
-    ]
+    """Generieke tekst-tabel parser voor overige formaten."""
     header_idx = -1
-    header_line = ''
     for i, line in enumerate(lines):
         ln = line.lower().strip()
         if re.search(r'(lakt|lactat|lw|lac\.)', ln) and re.search(r'(cel|scc|ins)', ln):
             header_idx = i
-            header_line = line
             break
-
     if header_idx < 0:
         return pd.DataFrame()
 
-    # Gebruik witruimte-splits om kolom-offsets te bepalen
-    header_parts = header_line.split()
+    header_parts = lines[header_idx].split()
     if len(header_parts) < 3:
         return pd.DataFrame()
 
@@ -175,7 +249,6 @@ def _parse_text_as_table(lines: list[str]) -> pd.DataFrame:
         stripped = line.strip()
         if not stripped or len(stripped) < 10:
             continue
-        # Stop als we een totaalregel of lege sectie bereiken
         if re.match(r'^(totaal|gemiddeld|gem\.|total|average)', stripped.lower()):
             break
         parts = stripped.split()
@@ -185,20 +258,17 @@ def _parse_text_as_table(lines: list[str]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
 
-    # Bepaal aantal kolommen op basis van langste rij
     max_cols = max(len(r) for r in rows)
     n_header = len(header_parts)
     n_cols = max(n_header, max_cols)
-
-    # Pad rijen en header tot gelijke lengte
     padded_rows = [r + [''] * (n_cols - len(r)) for r in rows]
     padded_header = header_parts + [f'col_{i}' for i in range(n_cols - n_header)]
-
     return pd.DataFrame(padded_rows, columns=padded_header)
 
 
+# ── Gemeenschappelijke helpers ────────────────────────────────────────────────
+
 def _clean_numeric(series: pd.Series) -> pd.Series:
-    """Schoon op voor numerieke waarden."""
     return pd.to_numeric(
         series.astype(str).str.replace(',', '.').str.extract(r'(-?[\d.]+)')[0],
         errors='coerce',
@@ -206,14 +276,11 @@ def _clean_numeric(series: pd.Series) -> pd.Series:
 
 
 def _apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
-    """Maak gestandaardiseerde DataFrame op basis van kolom-mapping."""
     result = pd.DataFrame()
-
     for std_field, orig_col in mapping.items():
         if orig_col in df.columns:
             result[std_field] = df[orig_col]
 
-    # Numeriek omzetten
     numeric_fields = [
         'lactation_number', 'lactation_value', 'inseminations',
         'milk_yield', 'cell_count', 'protein', 'fat', 'urea',
@@ -230,102 +297,20 @@ def _apply_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
 
     result = result.reset_index(drop=True)
 
-    # Defaults voor ontbrekende kolommen (None = ontbreekt, niet 0!)
     defaults = {
-        'animal_name': '',
-        'lactation_number': None,
-        'lactation_value': None,
-        'inseminations': None,
-        'cell_count': None,
-        'pregnant': False,
-        'milk_yield': None,
-        'protein': None,
-        'fat': None,
-        'urea': None,
-        'pfw': '',
-        'aaa_code': '',
-        'breed': 'Holstein',
-        'sire_name': '',
-        'sire_code': '',
-        'inbreeding_coefficient': None,
-        'advisor_note': '',
+        'animal_name': '', 'lactation_number': None, 'lactation_value': None,
+        'inseminations': None, 'cell_count': None, 'pregnant': False,
+        'milk_yield': None, 'protein': None, 'fat': None, 'urea': None,
+        'pfw': '', 'aaa_code': '', 'breed': 'Holstein', 'sire_name': '',
+        'sire_code': '', 'inbreeding_coefficient': None, 'advisor_note': '',
     }
     for col, default in defaults.items():
         if col not in result.columns:
             result[col] = default
-
     return result
 
 
-def parse_pdf_and_detect_columns(pdf_file):
-    """
-    Hoofdfunctie: parse melkcontrole PDF.
-
-    Returns:
-        Tuple (animals_df: DataFrame | None, column_mapping: dict, parse_info: dict)
-        parse_info bevat: {'method': str, 'rows_found': int, 'columns_found': list, 'error': str}
-    """
-    parse_info = {'method': None, 'rows_found': 0, 'columns_found': [], 'error': None}
-
-    if hasattr(pdf_file, 'seek'):
-        pdf_file.seek(0)
-
-    # ── Poging 1: tabel-extractie ──────────────────────────────────────────────
-    tables = _extract_tables_from_pdf(pdf_file)
-
-    if tables:
-        tables_sorted = sorted(tables, key=len, reverse=True)
-        raw_df = tables_sorted[0]
-        for tbl in tables_sorted[1:]:
-            if set(tbl.columns) == set(raw_df.columns):
-                raw_df = pd.concat([raw_df, tbl], ignore_index=True)
-
-        headers = [str(c) for c in raw_df.columns]
-        mapping = _detect_column_mapping(headers)
-
-        if not mapping:
-            mapping = _positional_mapping_fallback(headers)
-
-        if mapping and 'animal_id' in mapping:
-            animals_df = _apply_mapping(raw_df, mapping)
-            if len(animals_df) > 0:
-                parse_info['method'] = 'tabel'
-                parse_info['rows_found'] = len(animals_df)
-                parse_info['columns_found'] = list(mapping.keys())
-                return animals_df, mapping, parse_info
-
-    # ── Poging 2: tekst-extractie ──────────────────────────────────────────────
-    if hasattr(pdf_file, 'seek'):
-        pdf_file.seek(0)
-
-    lines = _extract_text_lines_from_pdf(pdf_file)
-    if lines:
-        raw_df = _parse_text_as_table(lines)
-        if not raw_df.empty:
-            headers = [str(c) for c in raw_df.columns]
-            mapping = _detect_column_mapping(headers)
-            if not mapping:
-                mapping = _positional_mapping_fallback(headers)
-            if mapping and 'animal_id' in mapping:
-                animals_df = _apply_mapping(raw_df, mapping)
-                if len(animals_df) > 0:
-                    parse_info['method'] = 'tekst'
-                    parse_info['rows_found'] = len(animals_df)
-                    parse_info['columns_found'] = list(mapping.keys())
-                    return animals_df, mapping, parse_info
-
-    # ── Mislukt ────────────────────────────────────────────────────────────────
-    raw_text_preview = '\n'.join(lines[:30]) if lines else '(geen tekst gevonden)'
-    parse_info['error'] = (
-        f'Kon geen dierendata vinden in de PDF. '
-        f'Gevonden kolommen in PDF: {[str(c) for c in (tables[0].columns if tables else [])]}. '
-        f'Eerste regels: {raw_text_preview[:300]}'
-    )
-    return None, {}, parse_info
-
-
 def _positional_mapping_fallback(headers: list) -> dict:
-    """Als geen kolomnamen herkend worden, probeer positionele mapping."""
     mapping = {}
     field_order = [
         'animal_id', 'animal_name', 'lactation_number', 'lactation_value',
@@ -335,6 +320,81 @@ def _positional_mapping_fallback(headers: list) -> dict:
         if i < len(headers) and headers[i]:
             mapping[field] = headers[i]
     return mapping
+
+
+# ── Hoofdfunctie ──────────────────────────────────────────────────────────────
+
+def parse_pdf_and_detect_columns(pdf_file):
+    """
+    Parse melkcontrole PDF. Probeert drie methoden:
+      1. pdfplumber tabel-extractie
+      2. DMS Deens Min-Liste formaat (tekst-gebaseerd)
+      3. Generieke tekst-tabel fallback
+
+    Returns:
+        Tuple (animals_df | None, column_mapping: dict, parse_info: dict)
+    """
+    parse_info = {'method': None, 'rows_found': 0, 'columns_found': [], 'error': None}
+
+    if hasattr(pdf_file, 'seek'):
+        pdf_file.seek(0)
+
+    # ── Methode 1: tabel-extractie ────────────────────────────────────────────
+    tables = _extract_tables_from_pdf(pdf_file)
+    if tables:
+        tables_sorted = sorted(tables, key=len, reverse=True)
+        raw_df = tables_sorted[0]
+        for tbl in tables_sorted[1:]:
+            if set(tbl.columns) == set(raw_df.columns):
+                raw_df = pd.concat([raw_df, tbl], ignore_index=True)
+
+        headers = [str(c) for c in raw_df.columns]
+        mapping = _detect_column_mapping(headers) or _positional_mapping_fallback(headers)
+
+        if mapping and 'animal_id' in mapping:
+            animals_df = _apply_mapping(raw_df, mapping)
+            if len(animals_df) > 0:
+                parse_info.update(method='tabel', rows_found=len(animals_df),
+                                  columns_found=list(mapping.keys()))
+                return animals_df, mapping, parse_info
+
+    # ── Methode 2: DMS Deens formaat ─────────────────────────────────────────
+    if hasattr(pdf_file, 'seek'):
+        pdf_file.seek(0)
+
+    lines = _extract_text_lines_from_pdf(pdf_file)
+
+    dms_df = _parse_dms_format(lines)
+    if not dms_df.empty:
+        parse_info.update(method='DMS-Deens', rows_found=len(dms_df),
+                          columns_found=['animal_id', 'lactation_value', 'lactation_number',
+                                         'inseminations', 'cell_count', 'milk_yield',
+                                         'fat', 'protein'])
+        mapping = {f: f for f in parse_info['columns_found']}
+        return dms_df, mapping, parse_info
+
+    # ── Methode 3: generieke tekst-tabel ─────────────────────────────────────
+    if lines:
+        raw_df = _parse_text_as_table(lines)
+        if not raw_df.empty:
+            headers = [str(c) for c in raw_df.columns]
+            mapping = _detect_column_mapping(headers) or _positional_mapping_fallback(headers)
+            if mapping and 'animal_id' in mapping:
+                animals_df = _apply_mapping(raw_df, mapping)
+                if len(animals_df) > 0:
+                    parse_info.update(method='tekst', rows_found=len(animals_df),
+                                      columns_found=list(mapping.keys()))
+                    return animals_df, mapping, parse_info
+
+    # ── Alle methoden mislukt ────────────────────────────────────────────────
+    raw_text_preview = '\n'.join(lines[:30]) if lines else '(geen tekst gevonden)'
+    tbl_cols = [str(c) for c in (tables[0].columns if tables else [])]
+    parse_info['error'] = (
+        f'Kon geen dierendata vinden in de PDF.\n'
+        f'Gevonden kolommen in PDF: {tbl_cols}.\n'
+        f'Eerste regels:\n{raw_text_preview[:500]}'
+    )
+    return None, {}, parse_info
 
 
 def _create_demo_dataframe() -> pd.DataFrame:
