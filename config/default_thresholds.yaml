@@ -1,0 +1,7 @@
+default_settings:
+  vaars_lactation_threshold: 92
+  koe_lactation_threshold: 98
+  insemination_threshold: 3
+  cell_count_threshold: 300
+  inbreeding_threshold: 12.5
+  cell_count_warning: 250

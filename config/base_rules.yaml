@@ -1,0 +1,54 @@
+version: '1.0'
+description: 'Basisregels voor stieradvies melkvee'
+
+belgian_witblauw:
+  - id: 'bwb_vaars_low_lactation'
+    condition: 'lactation_number == 1 AND lactation_value < 92'
+    action: 'belgian_witblauw'
+    priority: 1
+    reason: 'Vaars met lage lactatiewaarde'
+
+  - id: 'bwb_koe_low_lactation'
+    condition: 'lactation_number > 1 AND lactation_value < 98'
+    action: 'belgian_witblauw'
+    priority: 1
+    reason: 'Koe met lage lactatiewaarde'
+
+  - id: 'bwb_high_inseminations'
+    condition: 'inseminations >= 3'
+    action: 'belgian_witblauw'
+    priority: 2
+    reason: '>=3 inseminaties'
+
+  - id: 'bwb_high_cell_count'
+    condition: 'cell_count > 300'
+    action: 'belgian_witblauw'
+    priority: 2
+    reason: 'Hoog celgetal'
+
+milking_sire:
+  - id: 'milking_sire_medium_lactation'
+    condition: 'lactation_value >= 92 AND lactation_value < 105'
+    action: 'milking_sire'
+    priority: 2
+    reason: 'Gemiddelde melkproductie'
+
+genetic_merit:
+  - id: 'genetic_merit_high_lactation'
+    condition: 'lactation_value >= 105'
+    action: 'genetic_merit'
+    priority: 3
+    reason: 'Hoge melkproductie'
+
+scoring:
+  pfw_weight: 0.25
+  aaa_weight: 0.20
+  inbreeding_weight: 0.20
+  calf_ease_weight: 0.15
+  availability_weight: 0.10
+  breeder_preference_weight: 0.10
+
+inbreeding:
+  max_coefficient: 12.5
+  action_on_exceed: 'belgian_witblauw'
+  warning_threshold: 9.0

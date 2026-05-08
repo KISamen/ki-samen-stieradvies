@@ -1,0 +1,86 @@
+{
+  "categories": {
+    "belgian_witblauw": {
+      "label": "Belgisch Witblauw",
+      "description": "Vleesras voor koeien met lage genetische waarde of hoog celgetal",
+      "color": "#e74c3c"
+    },
+    "milking_sire": {
+      "label": "Melkstier",
+      "description": "Fokstier voor gemiddelde melkproductie",
+      "color": "#3498db"
+    },
+    "genetic_merit": {
+      "label": "Genetische Verdienste",
+      "description": "Fokstier voor hoge genetische waarde",
+      "color": "#2ecc71"
+    }
+  },
+  "sample_bulls": [
+    {
+      "name": "Debutant",
+      "breed": "belgian_witblauw",
+      "stier_code": "BE1234",
+      "aaa_code": "ABC",
+      "pfw_code": "203",
+      "kappa_casein": "BB",
+      "beta_casein": "A2A2",
+      "calf_ease_female": 95,
+      "suitable_for_heifers": true,
+      "price": 25.0,
+      "available": true
+    },
+    {
+      "name": "Altaspring",
+      "breed": "milking_sire",
+      "stier_code": "US5678",
+      "aaa_code": "BCE",
+      "pfw_code": "312",
+      "kappa_casein": "AB",
+      "beta_casein": "A1A2",
+      "calf_ease_female": 88,
+      "suitable_for_heifers": true,
+      "price": 35.0,
+      "available": true
+    },
+    {
+      "name": "Topnotch",
+      "breed": "genetic_merit",
+      "stier_code": "NL9012",
+      "aaa_code": "ACE",
+      "pfw_code": "421",
+      "kappa_casein": "BB",
+      "beta_casein": "A2A2",
+      "calf_ease_female": 82,
+      "suitable_for_heifers": false,
+      "price": 45.0,
+      "available": true
+    },
+    {
+      "name": "Goldwyn",
+      "breed": "genetic_merit",
+      "stier_code": "CA3456",
+      "aaa_code": "ADE",
+      "pfw_code": "213",
+      "kappa_casein": "BB",
+      "beta_casein": "A2A2",
+      "calf_ease_female": 91,
+      "suitable_for_heifers": true,
+      "price": 40.0,
+      "available": true
+    },
+    {
+      "name": "Ranger",
+      "breed": "belgian_witblauw",
+      "stier_code": "BE7890",
+      "aaa_code": "BCD",
+      "pfw_code": "102",
+      "kappa_casein": "AB",
+      "beta_casein": "A1A2",
+      "calf_ease_female": 97,
+      "suitable_for_heifers": true,
+      "price": 22.0,
+      "available": true
+    }
+  ]
+}
