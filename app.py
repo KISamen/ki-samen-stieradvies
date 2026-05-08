@@ -15,6 +15,22 @@ from engine.parser import _create_demo_dataframe, parse_pdf_and_detect_columns
 from engine.session_config import init_session_state
 from report.generator import ReportGenerator
 
+def _fmt(val, fmt: str = '') -> str:
+    """Formatteer een waarde voor weergave; None/nan → '—'."""
+    if val is None:
+        return '—'
+    try:
+        import math
+        if isinstance(val, float) and math.isnan(val):
+            return '—'
+        if fmt:
+            return f'{float(val):{fmt}}'
+        return str(int(val)) if float(val) == int(float(val)) else str(val)
+    except (TypeError, ValueError):
+        s = str(val)
+        return '—' if s in ('None', 'nan', '') else s
+
+
 # ── Pagina-config ────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="KI Samen Stieradvies",
@@ -268,8 +284,53 @@ if st.session_state.animals_df is not None:
 
     # ── TAB 1: DIEREN ─────────────────────────────────────────────────────────
     with tab1:
-        st.markdown("### Geëxtraheerde Dieren")
-        st.info("Controleer de data en pas waar nodig aan voordat je adviezen genereert.")
+        # ── Advies-overzichtstabel (bovenaan, als adviezen beschikbaar zijn) ──
+        if st.session_state.advice_result:
+            _adv_labels = {
+                'belgian_witblauw': '🔴 BWB',
+                'fokstier': '🟢 Fokstier',
+                'geen_advies': '⚪ Geen advies',
+                'onvoldoende_data': '⚠️ Data ontbreekt',
+                'overgeslagen': '⚪ Overgeslagen',
+                'milking_sire': '🟢 Fokstier',
+                'genetic_merit': '🟢 Fokstier',
+            }
+            overview_rows = []
+            for _, animal in st.session_state.animals_df.iterrows():
+                aid = str(animal.get('animal_id', ''))
+                adv = st.session_state.advice_result.get(aid, {})
+                adv_type = adv.get('advice_type', '')
+                bull = adv.get('recommended_bull') or '—'
+                has_warn = bool(adv.get('warnings'))
+                overview_rows.append({
+                    'Dier-ID': aid,
+                    'Lakt.nr.': _fmt(animal.get('lactation_number')),
+                    'LW': _fmt(animal.get('lactation_value'), '.1f'),
+                    'Ins.': _fmt(animal.get('inseminations')),
+                    'Celgetal': _fmt(animal.get('cell_count')),
+                    'Advies': _adv_labels.get(adv_type, adv_type or '—'),
+                    'Aanbevolen stier': bull,
+                    '⚠️': '⚠️' if has_warn else '',
+                })
+            st.dataframe(
+                pd.DataFrame(overview_rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Dier-ID': st.column_config.TextColumn(width='medium'),
+                    'Lakt.nr.': st.column_config.TextColumn(width='small'),
+                    'LW': st.column_config.TextColumn(width='small'),
+                    'Ins.': st.column_config.TextColumn(width='small'),
+                    'Celgetal': st.column_config.TextColumn(width='small'),
+                    'Advies': st.column_config.TextColumn(width='small'),
+                    'Aanbevolen stier': st.column_config.TextColumn(width='large'),
+                    '⚠️': st.column_config.TextColumn(width='small'),
+                },
+            )
+            st.markdown("---")
+
+        st.markdown("### Diergegevens (bewerkbaar)")
+        st.caption("Controleer en corrigeer de data voordat je adviezen genereert.")
 
         display_cols = [
             'animal_id', 'animal_name', 'lactation_number', 'lactation_value',
@@ -278,8 +339,16 @@ if st.session_state.animals_df is not None:
         ]
         available_cols = [c for c in display_cols if c in st.session_state.animals_df.columns]
 
+        # Vervang None door pd.NA voor betere weergave
+        edit_df = st.session_state.animals_df[available_cols].copy()
+        for col in edit_df.columns:
+            if edit_df[col].dtype == object:
+                edit_df[col] = edit_df[col].fillna('')
+            else:
+                edit_df[col] = edit_df[col].where(edit_df[col].notna(), other=None)
+
         edited_df = st.data_editor(
-            st.session_state.animals_df[available_cols],
+            edit_df,
             use_container_width=True,
             num_rows="dynamic",
             key='animals_editor',

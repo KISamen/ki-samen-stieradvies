@@ -1,5 +1,6 @@
 """
-PDF-rapportgenerator voor stieradvies met ReportLab.
+PDF-rapportgenerator voor KI Samen Stieradvies.
+Huisstijl: donkergroen (#1a7a4a), wit, lichtgroen accent.
 """
 import io
 import os
@@ -7,20 +8,34 @@ from datetime import datetime
 
 import pandas as pd
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import cm
 from reportlab.platypus import (
     Image, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
 )
 
-
 BRAND_GREEN = colors.HexColor('#1a7a4a')
 BRAND_LIGHT = colors.HexColor('#e8f5ee')
-BRAND_DARK = colors.HexColor('#0d3d25')
-HEADER_GRAY = colors.HexColor('#f0f0f0')
-ACCENT_RED = colors.HexColor('#c0392b')
-ACCENT_BLUE = colors.HexColor('#2980b9')
+BRAND_DARK  = colors.HexColor('#0d3d25')
+GRAY_ROW    = colors.HexColor('#f7f7f7')
+RED_BWB     = colors.HexColor('#c0392b')
+GREEN_FOK   = colors.HexColor('#1a7a4a')
+ORANGE_WARN = colors.HexColor('#e67e22')
+
+_ADVICE_LABELS = {
+    'belgian_witblauw': 'BWB',
+    'fokstier':         'Fokstier',
+    'geen_advies':      'Geen advies',
+    'onvoldoende_data': 'Data?',
+    'overgeslagen':     'Overgeslagen',
+    'milking_sire':     'Fokstier',
+    'genetic_merit':    'Fokstier',
+}
+_ADVICE_COLORS = {
+    'BWB':       RED_BWB,
+    'Fokstier':  GREEN_FOK,
+}
 
 
 class ReportGenerator:
@@ -34,308 +49,281 @@ class ReportGenerator:
         self._setup_styles()
 
     def _setup_styles(self):
-        """Definieer custom stijlen."""
         self.title_style = ParagraphStyle(
             'KISamenTitle',
             parent=self.styles['Heading1'],
-            fontSize=22,
-            textColor=BRAND_DARK,
-            spaceAfter=0.3 * cm,
+            fontSize=20,
+            textColor=colors.white,
+            spaceAfter=0,
             fontName='Helvetica-Bold',
         )
-        self.heading2_style = ParagraphStyle(
+        self.h2 = ParagraphStyle(
             'KISamenH2',
             parent=self.styles['Heading2'],
-            fontSize=14,
+            fontSize=11,
             textColor=BRAND_GREEN,
             spaceAfter=0.2 * cm,
-            spaceBefore=0.5 * cm,
+            spaceBefore=0.4 * cm,
             fontName='Helvetica-Bold',
         )
-        self.normal_style = ParagraphStyle(
+        self.normal = ParagraphStyle(
             'KISamenNormal',
             parent=self.styles['Normal'],
-            fontSize=9,
-            leading=14,
+            fontSize=8.5,
+            leading=13,
         )
-        self.caption_style = ParagraphStyle(
+        self.caption = ParagraphStyle(
             'KISamenCaption',
             parent=self.styles['Normal'],
-            fontSize=8,
+            fontSize=7.5,
             textColor=colors.gray,
         )
+        self.small = ParagraphStyle(
+            'KISamenSmall',
+            parent=self.styles['Normal'],
+            fontSize=7,
+            leading=10,
+        )
 
-    def generate_pdf_bytes(self):
-        """Genereer PDF en retourneer als bytes-object."""
+    def generate_pdf_bytes(self) -> bytes:
         buffer = io.BytesIO()
         self._build_pdf(buffer)
         buffer.seek(0)
         return buffer.read()
 
-    def generate_pdf(self, output_path='rapport.pdf'):
-        """Genereer PDF naar bestand."""
-        with open(output_path, 'wb') as f:
-            f.write(self.generate_pdf_bytes())
-
     def _build_pdf(self, buffer):
-        """Bouw de volledige PDF op."""
         doc = SimpleDocTemplate(
             buffer,
-            pagesize=A4,
+            pagesize=landscape(A4),
             rightMargin=1.5 * cm,
             leftMargin=1.5 * cm,
-            topMargin=2 * cm,
-            bottomMargin=2 * cm,
+            topMargin=1.5 * cm,
+            bottomMargin=1.5 * cm,
+            title=f"KI Samen Stieradvies – {self.company_name}",
+            author="KI Samen",
         )
 
         elements = []
-
-        # TITELPAGINA
-        elements += self._build_title_page()
-
-        # SAMENVATTING
+        elements += self._header_block()
+        elements.append(Spacer(1, 0.3 * cm))
+        elements += self._summary_block()
+        elements += self._rules_block()
+        elements += self._advice_table()
+        elements += self._attention_block()
         elements.append(Spacer(1, 0.5 * cm))
-        elements += self._build_summary()
-
-        # GEBRUIKTE REGELS
-        elements += self._build_rules_section()
-
-        # ADVIESLIJST
-        elements += self._build_advice_table()
-
-        # AANDACHTSPUNTEN
-        elements += self._build_attention_points()
-
-        # DISCLAIMER
-        elements.append(PageBreak())
-        elements += self._build_disclaimer()
+        elements += self._footer_block()
 
         doc.build(elements)
 
-    def _build_title_page(self):
-        elements = []
+    # ── Onderdelen ────────────────────────────────────────────────────────────
 
-        # Logo (indien beschikbaar)
-        logo_path = self.settings.get('logo_path')
-        if logo_path and os.path.exists(logo_path):
-            try:
-                logo = Image(logo_path, width=4 * cm, height=4 * cm)
-                elements.append(logo)
-                elements.append(Spacer(1, 0.5 * cm))
-            except Exception:
-                pass
+    def _header_block(self):
+        """Groene titelbalk met bedrijfsnaam en datum."""
+        datum = datetime.now().strftime('%d %B %Y')
+        titel = self.settings.get('title', 'Stieradvies')
 
-        # Groene header balk
-        header_data = [[f'  KI Samen Stieradvies']]
-        header_table = Table(header_data, colWidths=[18 * cm])
-        header_table.setStyle(TableStyle([
+        header_data = [[
+            Paragraph(f'KI Samen Stieradvies', self.title_style),
+            Paragraph(
+                f'<font color="white"><b>{self.company_name}</b> — {titel}<br/>'
+                f'<font size="8">{datum}</font></font>',
+                ParagraphStyle('hdr_right', parent=self.styles['Normal'],
+                               fontSize=10, textColor=colors.white, alignment=2),
+            ),
+        ]]
+        t = Table(header_data, colWidths=[12 * cm, 15 * cm])
+        t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, -1), BRAND_GREEN),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 10),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+            ('LEFTPADDING', (0, 0), (0, -1), 12),
+            ('RIGHTPADDING', (-1, 0), (-1, -1), 12),
+        ]))
+        return [t]
+
+    def _summary_block(self):
+        vals = list(self.advice_result.values())
+        total = len(self.animals_df) if self.animals_df is not None else 0
+        bwb   = sum(1 for a in vals if _ADVICE_LABELS.get(a.get('advice_type', ''), '') == 'BWB')
+        fok   = sum(1 for a in vals if _ADVICE_LABELS.get(a.get('advice_type', ''), '') == 'Fokstier')
+        geen  = sum(1 for a in vals if a.get('advice_type') in ('geen_advies', 'overgeslagen'))
+        warn  = sum(1 for a in vals if a.get('advice_type') == 'onvoldoende_data')
+        no_bull = sum(1 for a in vals if not a.get('recommended_bull')
+                      and a.get('advice_type') not in ('geen_advies', 'overgeslagen', 'onvoldoende_data'))
+
+        data = [
+            ['Totaal dieren', str(total),
+             'Belgisch Witblauw', str(bwb),
+             'Fokstier', str(fok),
+             'Geen/overgeslagen', str(geen),
+             'Data ontbreekt', str(warn),
+             'Geen stier gevonden', str(no_bull)],
+        ]
+        col_w = [3.5 * cm, 1.2 * cm] * 6
+        t = Table(data, colWidths=col_w)
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (1, 0), BRAND_DARK),
+            ('BACKGROUND', (2, 0), (3, 0), RED_BWB),
+            ('BACKGROUND', (4, 0), (5, 0), GREEN_FOK),
+            ('BACKGROUND', (6, 0), (-1, 0), colors.HexColor('#7f8c8d')),
             ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
             ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 16),
-            ('TOPPADDING', (0, 0), (-1, -1), 12),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+            ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ('GRID', (0, 0), (-1, -1), 0.3, colors.white),
+            ('ROUNDEDCORNERS', [3]),
         ]))
-        elements.append(header_table)
-        elements.append(Spacer(1, 0.3 * cm))
+        return [t, Spacer(1, 0.15 * cm)]
 
-        elements.append(Paragraph(self.company_name, self.title_style))
-        report_title = self.settings.get('title', 'Stieradvies')
-        elements.append(Paragraph(report_title, self.heading2_style))
-        elements.append(Paragraph(
-            f'Datum: {datetime.now().strftime("%d %B %Y")}',
-            self.normal_style,
-        ))
-        elements.append(Spacer(1, 0.3 * cm))
-
-        return elements
-
-    def _build_summary(self):
-        elements = [Paragraph('Samenvatting', self.heading2_style)]
-
-        total = len(self.animals_df) if self.animals_df is not None else 0
-        bwb = sum(1 for a in self.advice_result.values() if a.get('advice_type') == 'belgian_witblauw')
-        milk = sum(1 for a in self.advice_result.values() if a.get('advice_type') == 'milking_sire')
-        genetic = sum(1 for a in self.advice_result.values() if a.get('advice_type') == 'genetic_merit')
-        skipped = sum(1 for a in self.advice_result.values() if a.get('advice_type') == 'overgeslagen')
-
-        summary_data = [
-            ['Aantal geanalyseerde dieren', str(total)],
-            ['Belgisch Witblauw advies', str(bwb)],
-            ['Melkstier advies', str(milk)],
-            ['Genetische verdienste advies', str(genetic)],
-            ['Overgeslagen', str(skipped)],
-        ]
-
-        table = Table(summary_data, colWidths=[10 * cm, 4 * cm])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (0, -1), BRAND_LIGHT),
-            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ('ROWBACKGROUNDS', (0, 0), (-1, -1), [colors.white, HEADER_GRAY]),
-            ('TOPPADDING', (0, 0), (-1, -1), 4),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(table)
-
-        return elements
-
-    def _build_rules_section(self):
-        elements = [Paragraph('Gebruikte Drempels & Regels', self.heading2_style)]
-
+    def _rules_block(self):
         s = self.default_settings
-        rules_data = [
-            ['Regel', 'Drempel', 'Advies'],
-            ['Vaars lactatiewaarde', f'< {s.get("vaars_lactation_threshold", 92)}', 'Belgisch Witblauw'],
-            ['Koe lactatiewaarde', f'< {s.get("koe_lactation_threshold", 98)}', 'Belgisch Witblauw'],
-            ['Inseminaties', f'>= {s.get("insemination_threshold", 3)}', 'Belgisch Witblauw'],
-            ['Celgetal', f'> {s.get("cell_count_threshold", 300)}', 'Belgisch Witblauw'],
-            ['Inteelt %', f'> {s.get("inbreeding_threshold", 12.5)}%', 'Belgisch Witblauw'],
+        rules = [
+            f"Vaars LW < {s.get('vaars_lactation_threshold', 92)} → BWB",
+            f"Koe LW < {s.get('koe_lactation_threshold', 98)} → BWB",
+            f"Ins. ≥ {s.get('insemination_threshold', 3)} → BWB",
+            f"Celgetal > {s.get('cell_count_threshold', 300)} → BWB",
+            f"Inteelt > {s.get('inbreeding_threshold', 12.5)}% → BWB",
         ]
+        custom = s.get('custom_requests', '').strip()
+        if custom:
+            rules.append(f"Speciale wensen: {custom[:80]}")
 
-        table = Table(rules_data, colWidths=[8 * cm, 4 * cm, 6 * cm])
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), BRAND_GREEN),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, BRAND_LIGHT]),
+        rule_text = '   |   '.join(rules)
+        t = Table([[Paragraph(f'<b>Gebruikte drempels:</b>  {rule_text}', self.caption)]],
+                  colWidths=[27 * cm])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, -1), BRAND_LIGHT),
             ('TOPPADDING', (0, 0), (-1, -1), 4),
             ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ('LEFTPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 8),
         ]))
-        elements.append(table)
+        return [t, Spacer(1, 0.2 * cm)]
 
-        custom = s.get('custom_requests', '')
-        if custom:
-            elements.append(Spacer(1, 0.2 * cm))
-            elements.append(Paragraph(f'<b>Speciale verzoeken:</b> {custom}', self.normal_style))
-
-        return elements
-
-    def _build_advice_table(self):
-        elements = [Paragraph('Advies per Dier', self.heading2_style)]
+    def _advice_table(self):
+        elements = [Paragraph('Stieradvies per dier', self.h2)]
 
         if self.animals_df is None or self.animals_df.empty:
-            elements.append(Paragraph('Geen diergegevens beschikbaar.', self.normal_style))
-            return elements
+            return elements + [Paragraph('Geen diergegevens.', self.normal)]
 
-        header = ['Dier-ID', 'Naam', 'Lakt.\nnr.', 'Lakt.\nwrd.', 'Cel\ngetal', 'Ins.', 'Advies', 'Stier', 'Score', 'Reden']
+        header = ['Dier-ID', 'Lakt.\nnr.', 'LW', 'Ins.', 'Cel\ngetal',
+                  'Advies', 'Aanbevolen stier', 'Redenen']
         rows = [header]
 
         for _, row in self.animals_df.iterrows():
-            animal_id = str(row.get('animal_id', '-'))
-            advice = self.advice_result.get(animal_id, {})
+            aid = str(row.get('animal_id', '—'))
+            adv = self.advice_result.get(aid, {})
+            adv_type = adv.get('advice_type', '')
+            label = _ADVICE_LABELS.get(adv_type, adv_type or '—')
+            bull  = adv.get('recommended_bull') or '—'
+            reasons = adv.get('reasons', [])
+            reason_text = '; '.join(r for r in reasons if r)[:90]
+            warnings = adv.get('warnings', [])
+            if warnings and not adv.get('recommended_bull'):
+                reason_text = (warnings[0] if warnings else '')[:90]
 
-            advice_type = advice.get('advice_type', '-')
-            advice_labels = {
-                'belgian_witblauw': 'BWB',
-                'milking_sire': 'Melk',
-                'genetic_merit': 'Gen.',
-                'overgeslagen': 'Skip',
-            }
+            lw  = _safe_fmt(row.get('lactation_value'), '.1f')
+            ins = _safe_fmt(row.get('inseminations'))
+            cel = _safe_fmt(row.get('cell_count'))
+            lnr = _safe_fmt(row.get('lactation_number'))
 
-            lakt_nr = row.get('lactation_number', '-')
-            lakt_wrd = row.get('lactation_value', '-')
-            cell = row.get('cell_count', '-')
-            ins = row.get('inseminations', '-')
+            rows.append([aid[:14], lnr, lw, ins, cel, label, bull[:22], reason_text])
 
-            try:
-                lakt_wrd = f'{float(lakt_wrd):.1f}'
-            except (TypeError, ValueError):
-                lakt_wrd = str(lakt_wrd)
+        # Kleur advies-kolom per type
+        col_w = [3.2*cm, 1*cm, 1.2*cm, 1*cm, 1.2*cm, 1.8*cm, 4.5*cm, 12.1*cm]
+        t = Table(rows, colWidths=col_w, repeatRows=1)
 
-            explanation = advice.get('explanation', '-')
-            if len(explanation) > 35:
-                explanation = explanation[:33] + '...'
-
-            rows.append([
-                animal_id[:12],
-                str(row.get('animal_name', '-'))[:10],
-                str(lakt_nr),
-                lakt_wrd,
-                str(cell),
-                str(ins),
-                advice_labels.get(advice_type, advice_type[:4]),
-                str(advice.get('recommended_bull', '-'))[:10],
-                f'{advice.get("confidence_score", 0):.2f}',
-                explanation,
-            ])
-
-        col_widths = [2.2*cm, 1.8*cm, 1*cm, 1.1*cm, 1*cm, 0.8*cm, 1.2*cm, 2*cm, 1*cm, 5.2*cm]
-
-        table = Table(rows, colWidths=col_widths, repeatRows=1)
-        table.setStyle(TableStyle([
+        style = [
             ('BACKGROUND', (0, 0), (-1, 0), BRAND_GREEN),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 7.5),
-            ('GRID', (0, 0), (-1, -1), 0.3, colors.lightgrey),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, BRAND_LIGHT]),
-            ('TOPPADDING', (0, 0), (-1, -1), 3),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#cccccc')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, GRAY_ROW]),
+            ('TOPPADDING', (0, 0), (-1, -1), 2),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
             ('LEFTPADDING', (0, 0), (-1, -1), 4),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-            ('ALIGN', (2, 0), (8, -1), 'CENTER'),
-            ('WORDWRAP', (0, 0), (-1, -1), True),
-        ]))
-        elements.append(table)
+            ('ALIGN', (1, 0), (4, -1), 'CENTER'),
+            ('ALIGN', (5, 0), (5, -1), 'CENTER'),
+            ('WORDWRAP', (7, 0), (7, -1), True),
+        ]
+        # Kleur BWB-rijen rood, fokstier-rijen groen
+        for i, data_row in enumerate(rows[1:], start=1):
+            lbl = data_row[5]
+            if lbl == 'BWB':
+                style.append(('TEXTCOLOR', (5, i), (5, i), RED_BWB))
+                style.append(('FONTNAME', (5, i), (5, i), 'Helvetica-Bold'))
+            elif lbl == 'Fokstier':
+                style.append(('TEXTCOLOR', (5, i), (5, i), GREEN_FOK))
+                style.append(('FONTNAME', (5, i), (5, i), 'Helvetica-Bold'))
 
+        t.setStyle(TableStyle(style))
+        elements.append(t)
         return elements
 
-    def _build_attention_points(self):
-        elements = [Paragraph('Aandachtspunten', self.heading2_style)]
-
+    def _attention_block(self):
+        elements = [Spacer(1, 0.3 * cm), Paragraph('Aandachtspunten', self.h2)]
         points = []
 
-        # Hoog celgetal
         if self.animals_df is not None and 'cell_count' in self.animals_df.columns:
-            cell_threshold = self.default_settings.get('cell_count_threshold', 300)
+            cell_thr = self.default_settings.get('cell_count_threshold', 300)
             high_cell = self.animals_df[
-                pd.to_numeric(self.animals_df['cell_count'], errors='coerce') > cell_threshold
+                pd.to_numeric(self.animals_df['cell_count'], errors='coerce') > cell_thr
             ]
             if not high_cell.empty:
-                ids = ', '.join(high_cell['animal_id'].astype(str).head(5).tolist())
-                points.append(f'• {len(high_cell)} dier(en) met hoog celgetal (> {cell_threshold}): {ids}')
+                ids = ', '.join(high_cell['animal_id'].astype(str).head(8).tolist())
+                points.append(f'• {len(high_cell)} dier(en) met celgetal > {cell_thr}: {ids}')
 
-        # Uitgesloten stieren
-        # (wordt doorgegeven via report_settings indien relevant)
+        no_bull = [(aid, adv) for aid, adv in self.advice_result.items()
+                   if not adv.get('recommended_bull')
+                   and adv.get('advice_type') not in ('geen_advies', 'overgeslagen', 'onvoldoende_data')]
+        if no_bull:
+            ids = ', '.join(aid for aid, _ in no_bull[:6])
+            points.append(f'• {len(no_bull)} dier(en) zonder stieradvies (selectie heeft geen geschikte stier): {ids}')
 
-        # Overgeslagen dieren
         skipped = [aid for aid, adv in self.advice_result.items()
-                  if adv.get('advice_type') == 'overgeslagen']
+                   if adv.get('advice_type') in ('geen_advies', 'overgeslagen')]
         if skipped:
-            points.append(f'• {len(skipped)} dier(en) overgeslagen: {", ".join(skipped[:5])}')
+            points.append(f'• {len(skipped)} dier(en) overgeslagen (drachtig of handmatig): {", ".join(skipped[:6])}')
 
         if not points:
             points.append('• Geen bijzonderheden.')
 
-        for point in points:
-            elements.append(Paragraph(point, self.normal_style))
-
+        for p in points:
+            elements.append(Paragraph(p, self.normal))
         return elements
 
-    def _build_disclaimer(self):
-        elements = [Paragraph('Disclaimer', self.heading2_style)]
-
-        footer_text = self.settings.get('footer_text', '')
-        disclaimer_text = (
-            'Dit stieradvies is gegenereerd op basis van melkcontrolegegevens en vooraf ingestelde '
-            'criteria. Het advies is bedoeld als ondersteuning en vervangt geen persoonlijke '
-            'fokbegeleiding door een erkende fokadviseur. KI Samen is niet aansprakelijk voor '
-            'beslissingen die op basis van dit rapport worden genomen.'
+    def _footer_block(self):
+        footer = self.settings.get('footer_text', '')
+        disclaimer = (
+            'Dit stieradvies is gegenereerd op basis van melkcontrolegegevens en vooraf ingestelde criteria. '
+            'Het advies ondersteunt maar vervangt geen persoonlijke fokbegeleiding. '
+            'KI Samen is niet aansprakelijk voor beslissingen op basis van dit rapport.'
         )
-        if footer_text:
-            disclaimer_text += f'\n\n{footer_text}'
+        if footer:
+            disclaimer += f'  |  {footer}'
+        ts = datetime.now().strftime('%d-%m-%Y %H:%M')
+        return [
+            Paragraph(disclaimer, self.caption),
+            Paragraph(f'Gegenereerd: {ts} | KI Samen Stieradvies', self.caption),
+        ]
 
-        elements.append(Paragraph(disclaimer_text, self.normal_style))
-        elements.append(Spacer(1, 0.5 * cm))
-        elements.append(Paragraph(
-            f'Gegenereerd op {datetime.now().strftime("%d-%m-%Y om %H:%M")} | KI Samen Stieradvies App',
-            self.caption_style,
-        ))
 
-        return elements
+def _safe_fmt(val, fmt: str = '') -> str:
+    if val is None:
+        return '—'
+    try:
+        import math
+        f = float(val)
+        if math.isnan(f):
+            return '—'
+        if fmt:
+            return f'{f:{fmt}}'
+        return str(int(f)) if f == int(f) else str(f)
+    except (TypeError, ValueError):
+        s = str(val)
+        return '—' if s in ('None', 'nan', '') else s

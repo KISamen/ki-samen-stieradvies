@@ -426,9 +426,11 @@ def evaluate_animals(
         quality = check_data_quality(animal_dict)
         data_warnings = get_data_warnings(quality)
 
+        # Alleen lactatiewaarde + lactatienummer zijn kritiek;
+        # inseminaties None wordt behandeld als 0 (DMS-formaat laat 0 weg)
         missing_critical = any(
             quality.get(f) == 'missing'
-            for f in ('lactation_value', 'lactation_number', 'inseminations')
+            for f in ('lactation_value', 'lactation_number')
         )
         if missing_critical:
             advice_result[animal_id] = _make_advice(

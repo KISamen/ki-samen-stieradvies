@@ -155,10 +155,15 @@ def check_data_quality(animal_data: dict) -> dict[str, str]:
     Retourneert dict {veld: 'ok'|'missing'|'warning'}.
     """
     quality = {}
+
+    # Verplicht voor advies
     required = {
         'animal_id': 'Dier-ID',
         'lactation_number': 'Lactatienummer',
         'lactation_value': 'Lactatiewaarde',
+    }
+    # Nuttig maar niet blokkerend
+    soft = {
         'inseminations': 'Aantal inseminaties',
         'cell_count': 'Celgetal',
     }
@@ -169,25 +174,34 @@ def check_data_quality(animal_data: dict) -> dict[str, str]:
         'inbreeding_coefficient': 'Inteeltcoëfficiënt',
     }
 
-    for field, label in required.items():
+    def _is_missing(val):
+        return val is None or str(val).strip() in ('', 'nan', 'None')
+
+    for field in required:
         val = animal_data.get(field)
-        if val is None or str(val).strip() in ('', 'nan', '0', 'None'):
+        if _is_missing(val):
             quality[field] = 'missing'
         else:
             try:
-                if float(val) == 0.0 and field in ('lactation_value', 'inseminations', 'cell_count'):
+                # Lactatiewaarde 0.0 is verdacht (geen echte productie-index)
+                if float(val) == 0.0 and field == 'lactation_value':
                     quality[field] = 'warning'
                 else:
                     quality[field] = 'ok'
             except (TypeError, ValueError):
                 quality[field] = 'ok'
 
-    for field, label in optional.items():
+    for field in soft:
         val = animal_data.get(field)
-        if val is None or str(val).strip() in ('', 'nan', 'None'):
-            quality[field] = 'missing'
+        if _is_missing(val):
+            # Inseminaties None → behandel als 0 (DMS toont 0 niet)
+            quality[field] = 'warning'
         else:
             quality[field] = 'ok'
+
+    for field in optional:
+        val = animal_data.get(field)
+        quality[field] = 'missing' if _is_missing(val) else 'ok'
 
     return quality
 
