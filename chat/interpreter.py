@@ -7,25 +7,32 @@ import re
 import streamlit as st
 
 
-SYSTEM_PROMPT = """Je bent een fokadviseur-assistent voor melkveebedrijven. Je helpt boeren met stieradvies.
+SYSTEM_PROMPT = """Je bent een fokadviseur-assistent voor melkveebedrijven. Je helpt vertegenwoordigers met stieradvies.
+
+BELANGRIJK: Jij kiest NOOIT zelf een stier. Jij past alleen instellingen en drempelwaarden aan.
+De adviesmotor berekent daarna de beste stier op basis van vaste, controleerbare regels.
 
 De gebruiker kan vragen stellen over:
 - Waarom dier X stier Y krijgt (leg de regels uit)
-- Regelaanpassingen (bv. "verhoog celgetaldrempel naar 350")
+- Drempelwaarden aanpassen (bv. "verhoog celgetaldrempel naar 350")
 - Stieren uitsluiten (bv. "gebruik stier X niet meer")
 - Dieren overslaan (bv. "sla koe 123 over")
+- Fokdoelen aangeven (bv. "leg nadruk op uiergezondheid")
 - Rapportaanpassingen
 
 Jouw taak:
 1. Beantwoord de vraag vriendelijk en als expert in het Nederlands
 2. Als een wijziging nodig is, voeg dan ALTIJD een JSON-blok toe aan je antwoord
-3. Wees duidelijk en transparant over waarom een dier een bepaald advies krijgt
+3. Leg uit welke instelling je aanpast en waarom dat het advies beïnvloedt
 4. Gebruik eenvoudige taal, geen vakjargon
+5. Leg NOOIT zelf een stier op — pas alleen instellingen aan
 
 JSON-formaten voor wijzigingen (gebruik ```json ... ```):
 - Drempel aanpassen: {"type": "threshold", "field": "cell_count_threshold", "value": 350}
 - Stier uitsluiten: {"type": "exclude_bull", "bull_name": "StierNaam"}
 - Dier overslaan: {"type": "skip_animal", "animal_id": "NL123456789"}
+- Fokdoel instellen: {"type": "breeding_goal", "goal": "uiergezondheid"}
+- Speciale wens toevoegen: {"type": "custom_request", "text": "nadruk op levensduur"}
 - Rapport titel: {"type": "report_setting", "setting": "title", "value": "Mijn Rapport"}
 - Herbereken: {"type": "recalculate"}
 
@@ -168,6 +175,23 @@ GEBRUIKERSVRAAG: {user_message}"""
                 skipped = self.session_state['overrides'].get('skip_animals', set())
                 skipped.add(animal_id)
                 self.session_state['overrides']['skip_animals'] = skipped
+
+        elif change_type == 'breeding_goal':
+            goal = change.get('goal', '').strip()
+            if goal and 'default_settings' in self.session_state:
+                existing = self.session_state['default_settings'].get('custom_requests', '')
+                if goal.lower() not in existing.lower():
+                    self.session_state['default_settings']['custom_requests'] = (
+                        f"{existing}\n{goal}".strip() if existing else goal
+                    )
+
+        elif change_type == 'custom_request':
+            text = change.get('text', '').strip()
+            if text and 'default_settings' in self.session_state:
+                existing = self.session_state['default_settings'].get('custom_requests', '')
+                self.session_state['default_settings']['custom_requests'] = (
+                    f"{existing}\n{text}".strip() if existing else text
+                )
 
         elif change_type == 'report_setting':
             setting = change.get('setting', '')

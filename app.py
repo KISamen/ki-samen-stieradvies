@@ -317,6 +317,8 @@ if st.session_state.animals_df is not None:
                     'excluded_bulls': set(),
                     'excluded_breeders': set(),
                     'threshold_adjustments': {},
+                    'selected_bulls': st.session_state.overrides.get('selected_bulls', []),
+                    'bull_selection_mode': st.session_state.overrides.get('bull_selection_mode', 'all'),
                 }
                 st.rerun()
 
@@ -327,54 +329,94 @@ if st.session_state.animals_df is not None:
         if not st.session_state.advice_result:
             st.info("Geen adviezen gegenereerd. Ga naar de tab 'Dieren' en klik 'Genereer Adviezen'.")
         else:
-            # Samenvatting
             advice_vals = list(st.session_state.advice_result.values())
             bwb_n = sum(1 for a in advice_vals if a.get('advice_type') == 'belgian_witblauw')
-            milk_n = sum(1 for a in advice_vals if a.get('advice_type') == 'milking_sire')
-            gen_n = sum(1 for a in advice_vals if a.get('advice_type') == 'genetic_merit')
-            skip_n = sum(1 for a in advice_vals if a.get('advice_type') == 'overgeslagen')
+            fok_n = sum(1 for a in advice_vals if a.get('advice_type') == 'fokstier')
+            skip_n = sum(1 for a in advice_vals if a.get('advice_type') in ('geen_advies', 'overgeslagen'))
+            warn_n = sum(1 for a in advice_vals if a.get('advice_type') == 'onvoldoende_data')
+            no_bull_n = sum(1 for a in advice_vals if a.get('recommended_bull') is None and a.get('advice_type') not in ('geen_advies', 'overgeslagen', 'onvoldoende_data'))
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🔴 Belgisch Witblauw", bwb_n)
-            m2.metric("🔵 Melkstier", milk_n)
-            m3.metric("🟢 Gen. Verdienste", gen_n)
-            m4.metric("⚪ Overgeslagen", skip_n)
+            m2.metric("🟢 Fokstier", fok_n)
+            m3.metric("⚪ Geen advies", skip_n)
+            m4.metric("⚠️ Datawaarschuwing", warn_n + no_bull_n)
 
             st.markdown("---")
 
-            # Advies tabel
+            # Advies-kaarten per dier (tabel + inklapbare details)
+            advice_labels = {
+                'belgian_witblauw': '🔴 Belgisch Witblauw',
+                'fokstier': '🟢 Fokstier',
+                'geen_advies': '⚪ Geen advies',
+                'onvoldoende_data': '⚠️ Onvoldoende data',
+                'overgeslagen': '⚪ Overgeslagen',
+                # Backwards compat
+                'milking_sire': '🟢 Melkstier',
+                'genetic_merit': '🟢 Gen. Verdienste',
+            }
+
             rows = []
             for _, animal in st.session_state.animals_df.iterrows():
                 animal_id = str(animal.get('animal_id', ''))
                 advice = st.session_state.advice_result.get(animal_id, {})
-
-                advice_labels = {
-                    'belgian_witblauw': '🔴 Belgisch Witblauw',
-                    'milking_sire': '🔵 Melkstier',
-                    'genetic_merit': '🟢 Gen. Verdienste',
-                    'overgeslagen': '⚪ Overgeslagen',
-                }
-
+                warnings = advice.get('warnings', [])
                 rows.append({
                     'Dier-ID': animal_id,
                     'Naam': str(animal.get('animal_name', '-')),
-                    'Lakt.nr.': animal.get('lactation_number', '-'),
-                    'Lakt.wrd.': animal.get('lactation_value', '-'),
-                    'Celgetal': animal.get('cell_count', '-'),
-                    'Insem.': animal.get('inseminations', '-'),
+                    'Lakt.': animal.get('lactation_number', '-'),
+                    'LW': animal.get('lactation_value', '-'),
+                    'Cel': animal.get('cell_count', '-'),
+                    'Ins.': animal.get('inseminations', '-'),
                     'Advies': advice_labels.get(advice.get('advice_type', ''), advice.get('advice_type', '-')),
                     'Aanbevolen Stier': advice.get('recommended_bull', '-') or '-',
-                    'Score': f"{advice.get('confidence_score', 0):.2f}",
-                    'Reden': advice.get('explanation', '-'),
+                    'Waarschuwing': ' | '.join(warnings) if warnings else '',
                 })
 
-            advice_df = pd.DataFrame(rows)
-            st.dataframe(advice_df, use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            # Uitgesloten stieren tonen
+            # Detailweergave per dier
+            st.markdown("---")
+            st.markdown("#### Detail per dier")
+            for _, animal in st.session_state.animals_df.iterrows():
+                animal_id = str(animal.get('animal_id', ''))
+                advice = st.session_state.advice_result.get(animal_id, {})
+                if not advice:
+                    continue
+                label = advice_labels.get(advice.get('advice_type', ''), advice.get('advice_type', ''))
+                bull = advice.get('recommended_bull') or 'Geen stier gevonden'
+                header = f"{label} | {animal.get('animal_name', animal_id)} ({animal_id}) → {bull}"
+
+                with st.expander(header, expanded=False):
+                    reasons = advice.get('reasons', [])
+                    warnings = advice.get('warnings', [])
+
+                    if reasons:
+                        st.markdown("**Redenen:**")
+                        for r in reasons:
+                            st.markdown(f"- {r}")
+
+                    if warnings:
+                        st.markdown("**Waarschuwingen:**")
+                        for w in warnings:
+                            st.warning(w)
+
+                    excl = advice.get('excluded_bulls_detail', {})
+                    if excl:
+                        st.markdown("**Uitgesloten stieren:**")
+                        for bull_n, reason in list(excl.items())[:8]:
+                            st.caption(f"• {bull_n}: {reason}")
+
+                    bull_scores = advice.get('bull_scores', {})
+                    if bull_scores:
+                        st.markdown("**Top stieren (score):**")
+                        score_rows = [{'Stier': k, 'Score': v} for k, v in sorted(bull_scores.items(), key=lambda x: -x[1])[:5]]
+                        st.dataframe(pd.DataFrame(score_rows), hide_index=True, use_container_width=True)
+
+            # Sessie-uitgesloten stieren
             excluded = st.session_state.overrides.get('excluded_bulls', set())
             if excluded:
-                st.warning(f"⚠️ Uitgesloten stieren: {', '.join(excluded)}")
+                st.warning(f"Uitgesloten stieren deze sessie: {', '.join(excluded)}")
 
             st.markdown("---")
             st.markdown("### 📥 PDF Rapport Downloaden")
