@@ -77,33 +77,26 @@ COLUMN_ALIASES = {
 }
 
 # ── DMS Deens Min-Liste formaat ───────────────────────────────────────────────
-# Kolomvolgorde (na Dyr. Nr.):
-#   0: Lakt. værdi   1: Lakt. nr.   2: Antal ins.   3: Dg.e.kælv.
-#   4: Dg.e.Drægt.  5: Kg.i         6: S.12 mdr.    7: Fedt    8: Prot.
-#   9+: Morfar (naam)
+# Twee ID-formaten gezien in de praktijk:
+#   DK-formaat:        DK 7320 00001234  (DK + cijfergroepen)
+#   Besætning-formaat: 45919-02679       (herdnummer-diernummer)
+#
+# Kolomvolgorde na ID (variabel — sommige kolommen worden weggelaten als 0):
+#   Lakt. værdi | Lakt. nr. | [Antal ins.] | Dg.kælv. | [Dg.Drægt.|Ja] |
+#   [S.12 mdr.] | [Kg. EKM] | [Fedt pct.] | [Prot. pct.] | [tekst...]
 
-_DMS_DETECT = re.compile(r'dms\s+min|antal\s+dyr\s*:|dyr\.\s*nr\.|besætning', re.I)
-_DMS_DATA_ROW = re.compile(
-    r'^(DK[\d\s]{6,16}|\d{5,15})\s+'   # Dier-ID
-    r'(-?\d+)\s+'                        # Lakt. værdi
-    r'(\d+)\s+'                          # Lakt. nr.
-    r'(\d+)\s+'                          # Antal ins.
-    r'(\d+)\s+'                          # Dg. e. kælv.
-    r'(-|\d+)\s+'                        # Dg. e. Drægt.
-    r'(\d+)\s+'                          # Kg. i
-    r'(-|\d+)\s+'                        # S.12 mdr. (celgetal)
-    r'([\d.,]+)\s+'                      # Fedt %
-    r'([\d.,]+)'                         # Prot. %
+_DMS_DETECT = re.compile(
+    r'dms\s+min|antal\s+dyr\s*:|dyr\.\s*nr\.|bes.tning|lakt\.\s*v|kontroldato',
+    re.I,
 )
+# Matcht beide ID-formaten aan het begin van een rij
+_DMS_ID = re.compile(r'^(DK[\d\s]{5,18}|\d{3,6}-\d{3,8})\s+(.*)')
 
 
 def _parse_dms_format(lines: list[str]) -> pd.DataFrame:
     """
     Parser voor Deens DMS 'Min Liste' formaat.
-
-    Kolommen na Dyr. Nr.:
-      Lakt. værdi | Lakt. nr. | Antal ins. | Dg.kælv. | Dg.Drægt. |
-      Kg.i | S.12 mdr. | Fedt | Prot. | Morfar
+    Handelt variabele kolomaantallen af via positie-heuristieken.
     """
     text_block = '\n'.join(lines[:40])
     if not _DMS_DETECT.search(text_block):
@@ -111,54 +104,132 @@ def _parse_dms_format(lines: list[str]) -> pd.DataFrame:
 
     rows = []
     for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
-
-        m = _DMS_DATA_ROW.match(stripped)
-        if not m:
-            continue
-
-        raw_id = m.group(1).strip()
-        # Compacteer dier-ID (verwijder interne spaties)
-        animal_id = re.sub(r'\s+', '', raw_id)
-
-        lakt_val = _to_float(m.group(2))
-        lakt_nr = _to_float(m.group(3))
-        antal_ins = _to_float(m.group(4))
-        # groep 5 = Dg. e. kælv. (niet nodig voor advies)
-        dg_draegt = _to_float(m.group(6))   # > 0 = drachtig
-        kg_i = _to_float(m.group(7))
-        s12_mdr = _to_float(m.group(8))     # celgetal 12 mnd gemiddelde
-        fedt = _to_float(m.group(9).replace(',', '.'))
-        prot = _to_float(m.group(10).replace(',', '.'))
-
-        pregnant = dg_draegt is not None and dg_draegt > 0
-
-        rows.append({
-            'animal_id': animal_id,
-            'lactation_value': lakt_val,
-            'lactation_number': lakt_nr,
-            'inseminations': antal_ins,
-            'cell_count': s12_mdr,
-            'milk_yield': kg_i,
-            'fat': fedt,
-            'protein': prot,
-            'pregnant': pregnant,
-            'animal_name': '',
-            'sire_name': '',
-            'aaa_code': '',
-            'pfw': '',
-            'inbreeding_coefficient': None,
-            'advisor_note': '',
-        })
+        row = _parse_dms_row(line)
+        if row:
+            rows.append(row)
 
     if not rows:
         return pd.DataFrame()
 
     df = pd.DataFrame(rows)
-    df = df[df['animal_id'].notna() & (df['animal_id'] != '')].reset_index(drop=True)
+    df = df[df['animal_id'].notna() & (df['animal_id'].str.len() > 0)].reset_index(drop=True)
     return df
+
+
+def _parse_dms_row(line: str) -> dict | None:
+    """Parseer één DMS-datarij naar een dict met gestandaardiseerde velden."""
+    stripped = line.strip()
+    m = _DMS_ID.match(stripped)
+    if not m:
+        return None
+
+    raw_id = m.group(1).strip()
+    rest = m.group(2).strip()
+
+    # Sla rijen over waarbij het tweede veld ook een ID is (sub-records)
+    if re.match(r'^\d{3,6}-\d{3,8}', rest) or re.match(r'^DK[\d\s]{5,}', rest):
+        return None
+
+    animal_id = re.sub(r'\s+', '', raw_id)
+
+    # Tokeniseer: splits op spaties, verwerk getallen (komma als decimaal)
+    tokens = rest.split()
+    nums: list[float] = []
+    pregnant = False
+    text_parts: list[str] = []
+
+    not_pregnant_explicit = False
+    for t in tokens:
+        t_clean = t.replace(',', '.')
+        if t.lower() in ('ja', 'yes', 'gravid', 'drægt.', 'drägt.'):
+            pregnant = True
+        elif t.lower() in ('nej', 'no', 'nein', 'niet', 'non'):
+            not_pregnant_explicit = True
+        elif re.match(r'^-?\d+\.?\d*$', t_clean):
+            try:
+                nums.append(float(t_clean))
+            except ValueError:
+                text_parts.append(t)
+        else:
+            text_parts.append(t)
+
+    if len(nums) < 2:
+        return None
+
+    # ── Positie 0 & 1: lakt.val en lakt.nr ──────────────────────────────────
+    lakt_val = nums[0]
+    lakt_nr = nums[1]
+
+    # Swap als eerste waarde te klein is voor productie-index (≤ 20) en tweede > 20
+    if lakt_val <= 20 and lakt_nr > 20:
+        lakt_val, lakt_nr = lakt_nr, lakt_val
+
+    # Valideer: lakt.nr moet 1–20 zijn
+    if not (1 <= lakt_nr <= 20):
+        return None
+
+    pos = 2
+
+    # ── Positie 2: antal ins. (alleen als integer ≤ 20) ─────────────────────
+    antal_ins = None
+    if pos < len(nums) and nums[pos] == int(nums[pos]) and 0 <= nums[pos] <= 20:
+        antal_ins = int(nums[pos])
+        pos += 1
+
+    # ── Positie pos: dg. e. kælv. (sla over voor advies) ────────────────────
+    if pos < len(nums):
+        pos += 1
+
+    # ── Resterende waarden: celgetal, kg, fedt%, prot% ──────────────────────
+    remaining = nums[pos:]
+
+    # Fedt% en Prot%: twee opeenvolgende waarden in bereik [2.0, 7.5]
+    fedt, prot = None, None
+    pct_idx = [i for i, v in enumerate(remaining) if 2.0 <= v <= 7.5]
+    if len(pct_idx) >= 2:
+        fedt = remaining[pct_idx[-2]]
+        prot = remaining[pct_idx[-1]]
+
+    fedt_pos = pct_idx[-2] if len(pct_idx) >= 2 else len(remaining)
+
+    # Celgetal (S.12 mdr.): integer in [10, 800] voor fedt/prot positie
+    cell = None
+    for v in remaining[:fedt_pos]:
+        if 10 <= v <= 800 and v == int(v):
+            cell = v
+            break
+
+    # Kg EKM (totaal): grote waarde > 1000
+    kg = None
+    for v in remaining[:fedt_pos]:
+        if v > 1000:
+            kg = v
+            break
+
+    # Nej = expliciet niet drachtig; voorkomt ook dat numerieke waarde
+    # (bijv. dg.kælv) per ongeluk als drachtig wordt geïnterpreteerd
+    if not_pregnant_explicit:
+        pregnant = False
+
+    sire_name = ' '.join(text_parts[:3]) if text_parts else ''
+
+    return {
+        'animal_id': animal_id,
+        'lactation_value': lakt_val,
+        'lactation_number': lakt_nr,
+        'inseminations': antal_ins,
+        'cell_count': cell,
+        'milk_yield': kg,
+        'fat': fedt,
+        'protein': prot,
+        'pregnant': pregnant,
+        'animal_name': '',
+        'sire_name': sire_name,
+        'aaa_code': '',
+        'pfw': '',
+        'inbreeding_coefficient': None,
+        'advisor_note': '',
+    }
 
 
 def _to_float(val) -> float | None:
