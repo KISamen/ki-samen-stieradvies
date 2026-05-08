@@ -11,7 +11,7 @@ from anthropic import Anthropic
 from chat.interpreter import ChatInterpreter
 from engine.advisor import evaluate_animals
 from engine.bulls_loader import get_bwb_bulls, get_fokstieren, load_bulls_from_csv
-from engine.parser import parse_pdf_and_detect_columns
+from engine.parser import _create_demo_dataframe, parse_pdf_and_detect_columns
 from engine.session_config import init_session_state
 from report.generator import ReportGenerator
 
@@ -201,20 +201,31 @@ with st.sidebar:
     )
 
     if uploaded_pdf is not None:
-        with st.spinner("PDF inlezen en kolommen detecteren..."):
+        with st.spinner("PDF inlezen..."):
             try:
-                animals_df, column_mapping = parse_pdf_and_detect_columns(uploaded_pdf)
-                st.session_state.animals_df = animals_df
-                st.session_state.column_mapping = column_mapping
-                st.session_state.advice_result = {}
-                st.success(f"✅ {len(animals_df)} dieren ingelezen")
-                if column_mapping:
-                    st.caption(f"Gedetecteerde kolommen: {len(column_mapping)}")
+                animals_df, column_mapping, parse_info = parse_pdf_and_detect_columns(uploaded_pdf)
+                if animals_df is not None and len(animals_df) > 0:
+                    st.session_state.animals_df = animals_df
+                    st.session_state.column_mapping = column_mapping
+                    st.session_state.advice_result = {}
+                    method = parse_info.get('method', '?')
+                    st.success(
+                        f"✅ {len(animals_df)} dieren ingelezen "
+                        f"({len(column_mapping)} kolommen, methode: {method})"
+                    )
+                else:
+                    err = parse_info.get('error', 'Onbekende fout')
+                    st.error(f"Kon dieren niet uitlezen uit PDF.")
+                    with st.expander("Diagnose-informatie"):
+                        st.code(err)
+                    st.info(
+                        "Tips: controleer of de PDF tekst bevat (geen scan), "
+                        "of gebruik de Demo-data knop om te testen."
+                    )
             except Exception as e:
                 st.error(f"Fout bij PDF-parsing: {e}")
 
     elif use_demo and st.session_state.animals_df is None:
-        from engine.parser import _create_demo_dataframe
         st.session_state.animals_df = _create_demo_dataframe()
         st.session_state.advice_result = {}
         st.info("Demo-data geladen (4 voorbeelddieren)")
@@ -324,96 +335,114 @@ if st.session_state.animals_df is not None:
 
     # ── TAB 2: ADVIEZEN ───────────────────────────────────────────────────────
     with tab2:
-        st.markdown("### Adviezen per Dier")
+        st.markdown("### Stieradvies")
 
         if not st.session_state.advice_result:
-            st.info("Geen adviezen gegenereerd. Ga naar de tab 'Dieren' en klik 'Genereer Adviezen'.")
+            st.info("Klik op 'Genereer Adviezen' in de tab Dieren om adviezen te maken.")
         else:
             advice_vals = list(st.session_state.advice_result.values())
             bwb_n = sum(1 for a in advice_vals if a.get('advice_type') == 'belgian_witblauw')
             fok_n = sum(1 for a in advice_vals if a.get('advice_type') == 'fokstier')
             skip_n = sum(1 for a in advice_vals if a.get('advice_type') in ('geen_advies', 'overgeslagen'))
             warn_n = sum(1 for a in advice_vals if a.get('advice_type') == 'onvoldoende_data')
-            no_bull_n = sum(1 for a in advice_vals if a.get('recommended_bull') is None and a.get('advice_type') not in ('geen_advies', 'overgeslagen', 'onvoldoende_data'))
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("🔴 Belgisch Witblauw", bwb_n)
             m2.metric("🟢 Fokstier", fok_n)
             m3.metric("⚪ Geen advies", skip_n)
-            m4.metric("⚠️ Datawaarschuwing", warn_n + no_bull_n)
+            m4.metric("⚠️ Dataproblemen", warn_n)
 
             st.markdown("---")
 
-            # Advies-kaarten per dier (tabel + inklapbare details)
-            advice_labels = {
-                'belgian_witblauw': '🔴 Belgisch Witblauw',
-                'fokstier': '🟢 Fokstier',
-                'geen_advies': '⚪ Geen advies',
-                'onvoldoende_data': '⚠️ Onvoldoende data',
-                'overgeslagen': '⚪ Overgeslagen',
-                # Backwards compat
-                'milking_sire': '🟢 Melkstier',
-                'genetic_merit': '🟢 Gen. Verdienste',
+            # ── Overzichtstabel ───────────────────────────────────────────────
+            advice_type_label = {
+                'belgian_witblauw': 'BWB',
+                'fokstier': 'Fokstier',
+                'geen_advies': 'Geen advies',
+                'onvoldoende_data': '⚠️ Data ontbreekt',
+                'overgeslagen': 'Overgeslagen',
+                'milking_sire': 'Fokstier',
+                'genetic_merit': 'Fokstier',
             }
 
             rows = []
             for _, animal in st.session_state.animals_df.iterrows():
                 animal_id = str(animal.get('animal_id', ''))
-                advice = st.session_state.advice_result.get(animal_id, {})
-                warnings = advice.get('warnings', [])
+                adv = st.session_state.advice_result.get(animal_id, {})
+                adv_type = adv.get('advice_type', '')
+                bull = adv.get('recommended_bull') or '— geen stier gevonden —'
+                has_warn = bool(adv.get('warnings'))
                 rows.append({
                     'Dier-ID': animal_id,
-                    'Naam': str(animal.get('animal_name', '-')),
-                    'Lakt.': animal.get('lactation_number', '-'),
-                    'LW': animal.get('lactation_value', '-'),
-                    'Cel': animal.get('cell_count', '-'),
-                    'Ins.': animal.get('inseminations', '-'),
-                    'Advies': advice_labels.get(advice.get('advice_type', ''), advice.get('advice_type', '-')),
-                    'Aanbevolen Stier': advice.get('recommended_bull', '-') or '-',
-                    'Waarschuwing': ' | '.join(warnings) if warnings else '',
+                    'Naam': str(animal.get('animal_name', '') or ''),
+                    'Lakt.nr.': animal.get('lactation_number', ''),
+                    'LW': animal.get('lactation_value', ''),
+                    'Ins.': animal.get('inseminations', ''),
+                    'Celgetal': animal.get('cell_count', ''),
+                    'Advies type': advice_type_label.get(adv_type, adv_type),
+                    'Aanbevolen stier': bull,
+                    '⚠️': '⚠️' if has_warn else '',
                 })
 
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(
+                pd.DataFrame(rows),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'Dier-ID': st.column_config.TextColumn(width='medium'),
+                    'Naam': st.column_config.TextColumn(width='small'),
+                    'Lakt.nr.': st.column_config.NumberColumn(width='small'),
+                    'LW': st.column_config.NumberColumn(format='%.1f', width='small'),
+                    'Ins.': st.column_config.NumberColumn(width='small'),
+                    'Celgetal': st.column_config.NumberColumn(width='small'),
+                    'Advies type': st.column_config.TextColumn(width='small'),
+                    'Aanbevolen stier': st.column_config.TextColumn(width='large'),
+                    '⚠️': st.column_config.TextColumn(width='small'),
+                },
+            )
 
-            # Detailweergave per dier
+            # ── Detail per dier ───────────────────────────────────────────────
             st.markdown("---")
-            st.markdown("#### Detail per dier")
+            st.markdown("#### Toelichting per dier")
             for _, animal in st.session_state.animals_df.iterrows():
                 animal_id = str(animal.get('animal_id', ''))
-                advice = st.session_state.advice_result.get(animal_id, {})
-                if not advice:
+                adv = st.session_state.advice_result.get(animal_id, {})
+                if not adv:
                     continue
-                label = advice_labels.get(advice.get('advice_type', ''), advice.get('advice_type', ''))
-                bull = advice.get('recommended_bull') or 'Geen stier gevonden'
-                header = f"{label} | {animal.get('animal_name', animal_id)} ({animal_id}) → {bull}"
+
+                adv_type = adv.get('advice_type', '')
+                bull = adv.get('recommended_bull') or 'Geen stier gevonden'
+                type_lbl = advice_type_label.get(adv_type, adv_type)
+                naam = str(animal.get('animal_name', '') or animal_id)
+                header = f"{type_lbl} | {naam} ({animal_id}) → {bull}"
 
                 with st.expander(header, expanded=False):
-                    reasons = advice.get('reasons', [])
-                    warnings = advice.get('warnings', [])
+                    reasons = adv.get('reasons', [])
+                    warnings = adv.get('warnings', [])
 
                     if reasons:
                         st.markdown("**Redenen:**")
                         for r in reasons:
                             st.markdown(f"- {r}")
 
-                    if warnings:
-                        st.markdown("**Waarschuwingen:**")
-                        for w in warnings:
-                            st.warning(w)
+                    for w in warnings:
+                        st.warning(w)
 
-                    excl = advice.get('excluded_bulls_detail', {})
+                    excl = adv.get('excluded_bulls_detail', {})
                     if excl:
                         st.markdown("**Uitgesloten stieren:**")
-                        for bull_n, reason in list(excl.items())[:8]:
-                            st.caption(f"• {bull_n}: {reason}")
+                        for bn, reason in list(excl.items())[:8]:
+                            st.caption(f"• {bn}: {reason}")
 
-                    bull_scores = advice.get('bull_scores', {})
+                    bull_scores = adv.get('bull_scores', {})
                     if bull_scores:
                         st.markdown("**Top stieren (score):**")
-                        score_rows = [{'Stier': k, 'Score': v} for k, v in sorted(bull_scores.items(), key=lambda x: -x[1])[:5]]
+                        score_rows = [
+                            {'Stier': k, 'Score': v}
+                            for k, v in sorted(bull_scores.items(), key=lambda x: -x[1])[:5]
+                        ]
                         st.dataframe(pd.DataFrame(score_rows), hide_index=True, use_container_width=True)
 
-            # Sessie-uitgesloten stieren
             excluded = st.session_state.overrides.get('excluded_bulls', set())
             if excluded:
                 st.warning(f"Uitgesloten stieren deze sessie: {', '.join(excluded)}")
@@ -655,7 +684,6 @@ else:
     col_demo, _ = st.columns([2, 4])
     with col_demo:
         if st.button("🐄 Demo starten", type="primary", use_container_width=True):
-            from engine.parser import _create_demo_dataframe
             st.session_state.animals_df = _create_demo_dataframe()
             st.session_state.default_settings['set_at'] = datetime.now().isoformat()
             st.rerun()
