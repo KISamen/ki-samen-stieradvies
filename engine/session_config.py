@@ -23,6 +23,8 @@ DEFAULT_OVERRIDES = {
     'excluded_bulls': set(),
     'excluded_breeders': set(),
     'threshold_adjustments': {},
+    'selected_bulls': [],       # Eigen selectie: lijst van stiernamen
+    'bull_selection_mode': 'all',  # 'all' of 'eigen'
 }
 
 DEFAULT_REPORT_SETTINGS = {

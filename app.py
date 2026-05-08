@@ -10,6 +10,7 @@ from anthropic import Anthropic
 
 from chat.interpreter import ChatInterpreter
 from engine.advisor import evaluate_animals
+from engine.bulls_loader import get_bwb_bulls, get_fokstieren, load_bulls_from_csv
 from engine.parser import parse_pdf_and_detect_columns
 from engine.session_config import init_session_state
 from report.generator import ReportGenerator
@@ -137,6 +138,53 @@ with st.sidebar:
             st.metric("Insem. ≥", s['insemination_threshold'])
             st.metric("Celgetal >", s['cell_count_threshold'])
 
+    # ── Stieren Selectie ────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🐂 Stieren Selectie")
+
+    all_bulls_df = load_bulls_from_csv()
+    bwb_count = int(all_bulls_df['category'].eq('belgian_witblauw').sum()) if not all_bulls_df.empty else 0
+    fokstier_count = int(all_bulls_df['category'].eq('milking_sire').sum()) if not all_bulls_df.empty else 0
+
+    if all_bulls_df.empty:
+        st.warning("Geen stierendatabase gevonden. Zorg dat er een CSV-bestand in de 'data' map staat.")
+    else:
+        st.caption(f"Database: {len(all_bulls_df)} actieve stieren ({bwb_count} BWB · {fokstier_count} fokstier)")
+
+    bull_mode = st.radio(
+        "Stieren selectie",
+        options=['Alle stieren', 'Eigen selectie'],
+        index=0 if st.session_state.overrides.get('bull_selection_mode', 'all') == 'all' else 1,
+        horizontal=True,
+        label_visibility='collapsed',
+        key='bull_mode_radio',
+    )
+    st.session_state.overrides['bull_selection_mode'] = 'all' if bull_mode == 'Alle stieren' else 'eigen'
+
+    if bull_mode == 'Eigen selectie' and not all_bulls_df.empty:
+        all_names = sorted(all_bulls_df['name'].dropna().unique().tolist())
+
+        selected = st.multiselect(
+            "Selecteer stieren",
+            options=all_names,
+            default=st.session_state.overrides.get('selected_bulls', []),
+            placeholder="Zoek en selecteer stieren...",
+            key='bull_multiselect',
+            help="Kies de stieren die je wilt inzetten. Zowel BWB als fokstieren kunnen worden geselecteerd.",
+        )
+        st.session_state.overrides['selected_bulls'] = selected
+
+        # Toon verdeling van de selectie
+        if selected:
+            sel_df = all_bulls_df[all_bulls_df['name'].isin(selected)]
+            sel_bwb = int(sel_df['category'].eq('belgian_witblauw').sum())
+            sel_fok = int(sel_df['category'].eq('milking_sire').sum())
+            st.caption(f"Selectie: {len(selected)} stieren — {sel_bwb} BWB · {sel_fok} fokstier")
+        else:
+            st.info("Geen stieren geselecteerd — alle actieve stieren worden gebruikt.")
+    else:
+        st.session_state.overrides['selected_bulls'] = []
+
     st.markdown("---")
     st.markdown("### 📤 PDF Uploaden")
 
@@ -205,7 +253,7 @@ with col_info:
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 if st.session_state.animals_df is not None:
-    tab1, tab2, tab3 = st.tabs(["🐄 Dieren", "🎯 Adviezen", "💬 Chat"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🐄 Dieren", "🎯 Adviezen", "🐂 Stieren", "💬 Chat"])
 
     # ── TAB 1: DIEREN ─────────────────────────────────────────────────────────
     with tab1:
@@ -371,8 +419,80 @@ if st.session_state.animals_df is not None:
                         except Exception as e:
                             st.error(f"Fout bij PDF generatie: {e}")
 
-    # ── TAB 3: CHAT ───────────────────────────────────────────────────────────
+    # ── TAB 3: STIEREN ────────────────────────────────────────────────────────
     with tab3:
+        st.markdown("### Stierendatabase")
+
+        bulls_df = load_bulls_from_csv()
+
+        if bulls_df.empty:
+            st.warning("Geen stierendatabase beschikbaar. Zorg dat er een CSV-bestand in de 'data' map staat.")
+        else:
+            col_f1, col_f2, col_f3 = st.columns(3)
+            with col_f1:
+                show_filter = st.selectbox(
+                    "Filter op type",
+                    options=['Alle stieren', 'Fokstieren', 'BWB / Beef-on-dairy'],
+                    key='bulls_tab_filter',
+                )
+            with col_f2:
+                search_term = st.text_input(
+                    "Zoek stier",
+                    placeholder="Naam of afkorting...",
+                    key='bulls_tab_search',
+                )
+            with col_f3:
+                show_heifers_only = st.checkbox("Alleen pinkenstieren", key='bulls_heifer_filter')
+
+            view_df = bulls_df.copy()
+            if show_filter == 'Fokstieren':
+                view_df = view_df[view_df['fokstier_type'] == 'Fokstier']
+            elif show_filter == 'BWB / Beef-on-dairy':
+                view_df = view_df[view_df['bwb_type'].notna() & (view_df['bwb_type'].str.strip() != '')]
+            if search_term:
+                mask = (
+                    view_df['name'].str.contains(search_term, case=False, na=False) |
+                    view_df['short_name'].str.contains(search_term, case=False, na=False)
+                )
+                view_df = view_df[mask]
+            if show_heifers_only:
+                view_df = view_df[view_df['suitable_for_heifers'] == True]
+
+            st.caption(f"{len(view_df)} stieren weergegeven")
+
+            display_cols = ['name', 'short_name', 'breed_name', 'fokstier_type', 'bwb_type',
+                            'suitable_for_heifers', 'kappa_casein', 'beta_casein', 'nvi',
+                            'calf_ease', 'price']
+            available = [c for c in display_cols if c in view_df.columns]
+
+            st.dataframe(
+                view_df[available].reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    'name': st.column_config.TextColumn('Naam stier', width='large'),
+                    'short_name': st.column_config.TextColumn('Afkorting', width='medium'),
+                    'breed_name': st.column_config.TextColumn('Ras', width='medium'),
+                    'fokstier_type': st.column_config.TextColumn('Type', width='small'),
+                    'bwb_type': st.column_config.TextColumn('BWB type', width='small'),
+                    'suitable_for_heifers': st.column_config.CheckboxColumn('Pinkenstier', width='small'),
+                    'kappa_casein': st.column_config.TextColumn('Kappa', width='small'),
+                    'beta_casein': st.column_config.TextColumn('Beta', width='small'),
+                    'nvi': st.column_config.NumberColumn('NVI', format='%.0f', width='small'),
+                    'calf_ease': st.column_config.NumberColumn('Geboortegemak', format='%.0f', width='small'),
+                    'price': st.column_config.NumberColumn('Prijs €', format='%.2f', width='small'),
+                },
+            )
+
+            st.markdown("---")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Totaal actief", len(bulls_df))
+            m2.metric("Fokstieren", int((bulls_df['fokstier_type'] == 'Fokstier').sum()))
+            m3.metric("BWB / BoD", int(bulls_df['bwb_type'].notna().sum()))
+            m4.metric("Pinkenstieren", int(bulls_df['suitable_for_heifers'].sum()))
+
+    # ── TAB 4: CHAT ───────────────────────────────────────────────────────────
+    with tab4:
         st.markdown("### 💬 Vragen & Aanpassingen")
         st.info(
             "Stel vragen over de adviezen of vraag om aanpassingen. "
